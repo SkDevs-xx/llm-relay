@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 
 const STREAM_IDLE_MS = Number(process.env.RELAY_UPSTREAM_TIMEOUT_MS || 90 * 1000);
+const RELAY_LOG = process.env.RELAY_LOG === '1';
 
 function textOf(x) {
   if (typeof x === 'string') return x;
@@ -156,8 +157,10 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
   let textIdx = -1;
   let textOpen = false;
   const toolMap = new Map();
+  const toolInfo = new Map();
   let finish = null;
   let outTokens = 0;
+  let textOut = '';
 
   const nodeStream = Readable.fromWeb(webBody);
   const decoder = new StringDecoder('utf8');
@@ -170,6 +173,10 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
 
   const finalize = () => {
     clearTimeout(idleTimer);
+    if (RELAY_LOG) {
+      const tools = [...toolInfo.values()].map(t => t.name + '(' + t.args.slice(0, 200) + ')');
+      console.warn('[' + reqID + '] <- text=' + JSON.stringify(textOut.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + mapFinish(finish));
+    }
     if (finish === null) {
       console.warn('[' + reqID + '] stream ended without finish_reason -> error');
       send('error', { type: 'error', error: { type: 'api_error', message: 'upstream stream ended prematurely' } });
@@ -240,6 +247,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
             index: textIdx,
             delta: { type: 'text_delta', text: d.content },
           });
+          textOut += d.content;
         }
 
         if (d?.tool_calls) {
@@ -252,6 +260,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
               }
               const bi = nextBlock++;
               toolMap.set(tc.index, bi);
+              toolInfo.set(tc.index, { name: tc.function?.name || '', args: '' });
               send('content_block_start', {
                 type: 'content_block_start',
                 index: bi,
@@ -269,6 +278,8 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
                 index: toolMap.get(tc.index),
                 delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
               });
+              const ti = toolInfo.get(tc.index);
+              if (ti) ti.args += tc.function.arguments;
             }
           }
         }

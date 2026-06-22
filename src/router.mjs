@@ -14,6 +14,7 @@ const ANTHROPIC_UPSTREAM = 'https://api.anthropic.com';
 const MARKER_RE = /(?:^|\s)RELAY-MODEL:\s*(\S+)/m;
 const IDLE_MS = Number(process.env.RELAY_IDLE_MS || 20 * 60 * 1000);
 const UPSTREAM_TIMEOUT_MS = Number(process.env.RELAY_UPSTREAM_TIMEOUT_MS || 90 * 1000);
+const RELAY_LOG = process.env.RELAY_LOG === '1';
 
 let inflight = 0;
 let idleTimer = null;
@@ -44,6 +45,28 @@ function extractSystemText(system) {
   if (typeof system === 'string') return system;
   if (Array.isArray(system)) return system.map(b => b.text || '').join(' ');
   return '';
+}
+
+function lastUserText(body) {
+  const msgs = (body && body.messages) || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role !== 'user') continue;
+    const c = msgs[i].content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) {
+      const t = c.filter(b => b.type === 'text').map(b => b.text).join(' ');
+      const tr = c.filter(b => b.type === 'tool_result').length;
+      return t || (tr ? '[' + tr + ' tool_result]' : '');
+    }
+  }
+  return '';
+}
+
+function respSummary(aj) {
+  const c = aj.content || [];
+  const text = c.filter(b => b.type === 'text').map(b => b.text).join(' ');
+  const tools = c.filter(b => b.type === 'tool_use').map(b => b.name + '(' + JSON.stringify(b.input).slice(0, 200) + ')');
+  return 'text=' + JSON.stringify(text.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + aj.stop_reason;
 }
 
 const modelsMap = loadModels();
@@ -114,6 +137,7 @@ const server = http.createServer((req, res) => {
         }
         bodyToSend = Buffer.from(JSON.stringify(oaBody), 'utf8');
         upstreamUrl = cfg.base_url + '/chat/completions';
+        if (RELAY_LOG) console.warn(`[${reqID}] -> alias=${alias} model=${cfg.model} stream=${parsedBody.stream === true} tools=${(parsedBody.tools || []).length} in=${JSON.stringify(lastUserText(parsedBody).slice(0, 200))}`);
         forwardHeaders = {};
         for (const [k, v] of Object.entries(req.headers)) {
           if (k === 'host' || k === 'content-length' || k === 'authorization' || k === 'x-api-key' || k === 'accept-encoding' || k === 'anthropic-version' || k === 'anthropic-beta') continue;
@@ -179,6 +203,7 @@ const server = http.createServer((req, res) => {
         } else {
           const oj = await up.json();
           const aj = fromOpenAIResponse(oj, parsedBody.model || alias, reqID);
+          if (RELAY_LOG) console.warn(`[${reqID}] <- ${respSummary(aj)}`);
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify(aj));
         }
