@@ -32,7 +32,9 @@ function loadModels() {
   const cfg = JSON.parse(readFileSync(JSON_PATH, 'utf8'));
   const map = new Map();
   for (const entry of cfg.models) {
-    map.set(entry.alias, { model: entry.model, base_url: entry.base_url, api_key: entry.api_key, format: entry.format || 'anthropic' });
+    const base_url = String(entry.base_url || '').replace(/\/+$/, '');
+    const format = String(entry.format || 'anthropic').toLowerCase();
+    map.set(entry.alias, { model: entry.model, base_url, api_key: entry.api_key, format });
   }
   return map;
 }
@@ -60,6 +62,8 @@ const server = http.createServer((req, res) => {
   };
   res.on('finish', onDone);
   res.on('close', onDone);
+  res.on('error', () => {});
+  req.on('error', () => {});
 
   const reqID = randomUUID().slice(0, 8);
 
@@ -98,7 +102,15 @@ const server = http.createServer((req, res) => {
         alias = null;
       } else if (cfg.format === 'openai') {
         isOpenAI = true;
-        const oaBody = toOpenAIRequest(parsedBody, cfg.model);
+        let oaBody;
+        try {
+          oaBody = toOpenAIRequest(parsedBody, cfg.model);
+        } catch (e) {
+          console.warn(`[${reqID}] request translate error: ${e.message}`);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end('{"type":"error","error":{"type":"api_error","message":"relay translate failed"}}');
+          return;
+        }
         bodyToSend = Buffer.from(JSON.stringify(oaBody), 'utf8');
         upstreamUrl = cfg.base_url + '/chat/completions';
         forwardHeaders = {};

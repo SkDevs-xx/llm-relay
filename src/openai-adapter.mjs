@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 
 function textOf(x) {
   if (typeof x === 'string') return x;
@@ -157,6 +158,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
   let outTokens = 0;
 
   const nodeStream = Readable.fromWeb(webBody);
+  const decoder = new StringDecoder('utf8');
   let buf = '';
 
   const finalize = () => {
@@ -182,7 +184,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
 
   try {
     for await (const chunk of nodeStream) {
-      buf += chunk.toString('utf8');
+      buf += decoder.write(chunk);
       const lines = buf.split('\n');
       buf = lines.pop();
 
@@ -262,8 +264,10 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
         if (fr) finish = fr;
       }
     }
+    buf += decoder.end();
     finalize();
   } catch (e) {
+    console.warn('[' + reqID + '] stream crash: ' + e.message);
     if (!res.writableEnded) res.end();
   }
 }
