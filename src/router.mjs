@@ -13,6 +13,7 @@ const PORT = Number(process.env.PORT || 8787);
 const ANTHROPIC_UPSTREAM = 'https://api.anthropic.com';
 const MARKER_RE = /(?:^|\s)RELAY-MODEL:\s*(\S+)/m;
 const IDLE_MS = Number(process.env.RELAY_IDLE_MS || 20 * 60 * 1000);
+const UPSTREAM_TIMEOUT_MS = Number(process.env.RELAY_UPSTREAM_TIMEOUT_MS || 90 * 1000);
 
 let inflight = 0;
 let idleTimer = null;
@@ -149,13 +150,17 @@ const server = http.createServer((req, res) => {
       forwardHeaders['accept-encoding'] = 'identity';
     }
 
+    const ac = new AbortController();
+    const upstreamTimer = setTimeout(() => ac.abort(), UPSTREAM_TIMEOUT_MS);
     try {
       const up = await fetch(upstreamUrl, {
         method: 'POST',
         headers: forwardHeaders,
         body: bodyToSend,
         duplex: 'half',
+        signal: ac.signal,
       });
+      clearTimeout(upstreamTimer);
 
       if (up.status >= 400) {
         console.warn(`[${reqID}] upstream error alias=${alias ?? 'anthropic'} status=${up.status}`);
@@ -196,10 +201,14 @@ const server = http.createServer((req, res) => {
       pipeline(Readable.fromWeb(up.body), res).catch(() => {
         if (!res.writableEnded) res.end();
       });
-    } catch {
+    } catch (e) {
+      clearTimeout(upstreamTimer);
       if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end('{"type":"error","error":{"type":"api_error","message":"relay forward failed"}}');
+        const aborted = e.name === 'AbortError';
+        res.writeHead(aborted ? 504 : 502, { 'Content-Type': 'application/json' });
+        res.end(aborted
+          ? '{"type":"error","error":{"type":"timeout_error","message":"relay upstream timeout"}}'
+          : '{"type":"error","error":{"type":"api_error","message":"relay forward failed"}}');
       } else {
         res.end();
       }

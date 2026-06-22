@@ -1,6 +1,8 @@
 import { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 
+const STREAM_IDLE_MS = Number(process.env.RELAY_UPSTREAM_TIMEOUT_MS || 90 * 1000);
+
 function textOf(x) {
   if (typeof x === 'string') return x;
   if (Array.isArray(x)) return x.filter(b => b.type === 'text').map(b => b.text).join('\n');
@@ -160,10 +162,19 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
   const nodeStream = Readable.fromWeb(webBody);
   const decoder = new StringDecoder('utf8');
   let buf = '';
+  let idleTimer = setTimeout(() => nodeStream.destroy(new Error('stream idle timeout')), STREAM_IDLE_MS);
+  const bumpIdle = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => nodeStream.destroy(new Error('stream idle timeout')), STREAM_IDLE_MS);
+  };
 
   const finalize = () => {
+    clearTimeout(idleTimer);
     if (finish === null) {
-      console.warn('[' + reqID + '] stream ended with no finish_reason (possible premature close)');
+      console.warn('[' + reqID + '] stream ended without finish_reason -> error');
+      send('error', { type: 'error', error: { type: 'api_error', message: 'upstream stream ended prematurely' } });
+      res.end();
+      return;
     }
     if (textOpen) {
       send('content_block_stop', { type: 'content_block_stop', index: textIdx });
@@ -180,10 +191,11 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
     res.end();
   };
 
-  res.on('close', () => nodeStream.destroy());
+  res.on('close', () => { clearTimeout(idleTimer); nodeStream.destroy(); });
 
   try {
     for await (const chunk of nodeStream) {
+      bumpIdle();
       buf += decoder.write(chunk);
       const lines = buf.split('\n');
       buf = lines.pop();
@@ -267,7 +279,11 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
     buf += decoder.end();
     finalize();
   } catch (e) {
+    clearTimeout(idleTimer);
     console.warn('[' + reqID + '] stream crash: ' + e.message);
-    if (!res.writableEnded) res.end();
+    if (!res.writableEnded) {
+      try { send('error', { type: 'error', error: { type: 'api_error', message: 'upstream stream error' } }); } catch {}
+      res.end();
+    }
   }
 }
