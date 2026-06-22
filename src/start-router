@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+PORT=${PORT:-8787}
+HOST=127.0.0.1
+
+if curl -sf --max-time 1 "http://${HOST}:${PORT}/" > /dev/null 2>&1; then
+  echo "llm-relay: router already running on ${HOST}:${PORT}"
+  exit 0
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROUTER="$SCRIPT_DIR/router.mjs"
+LOG="$SCRIPT_DIR/../router.log"
+
+nohup node "$ROUTER" >> "$LOG" 2>&1 &
+ROUTER_PID=$!
+
+for i in 1 2 3 4 5; do
+  sleep 0.5
+  if curl -sf --max-time 1 "http://${HOST}:${PORT}/" > /dev/null 2>&1; then
+    echo "llm-relay: router started (pid=$ROUTER_PID)"
+    exit 0
+  fi
+done
+
+echo "llm-relay: router failed to start within 2.5s (pid=$ROUTER_PID). Check $LOG"
+exit 1
