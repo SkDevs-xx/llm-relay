@@ -1,5 +1,9 @@
 # llm-relay
 
+Claude Code の**メインセッションは Claude（Anthropic OAuth）のまま**、選んだ**サブエージェントだけを
+外部 LLM（OpenRouter / NVIDIA NIM / ZenMux など）へ中継**する小さなローカルルーター。
+`claude` の起動方法は変えません。**本部は Claude、支店だけ外部モデル**、という方式です。
+
 ### 仕組み
 
 Claude Code を `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` でローカルルーターに向けます。
@@ -96,6 +100,47 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude -p "say hi"
 
 `start-router` は冪等（二重起動しません）。
 
+### 使い方の例：コードレビューを外部モデル(glm-5.1)に投げる
+
+「メインは Claude のまま、コードレビューだけ速い/安い外部モデルに任せる」例。
+
+**1) `models.json` に glm-5.1 を用意**（NVIDIA NIM の例）:
+
+```json
+{
+  "alias": "glm-5.1",
+  "model": "z-ai/glm-5.1",
+  "format": "openai",
+  "base_url": "https://integrate.api.nvidia.com/v1",
+  "api_key": "nvapi-..."
+}
+```
+
+**2) 中継サブエージェントを作る — `.claude/agents/glm-reviewer.md`**:
+
+```markdown
+---
+name: glm-reviewer
+description: "外部 GLM-5.1 でコードをレビューする。レビューを頼まれたら使う。"
+model: sonnet
+---
+
+RELAY-MODEL: glm-5.1
+
+あなたはコードレビュアーです。渡された差分の不具合・リスク・改善点を file:line 付きで簡潔に挙げてください。
+```
+
+**3) 新しい `claude` セッションで使う**（マーカーは本文先頭の `RELAY-MODEL: glm-5.1`）:
+
+```
+> glm-reviewer サブエージェントで、いまの変更をレビューして
+```
+
+メインの応答は Claude（あなたの購読）、レビューの中身だけ glm-5.1 が生成します。Claude Code は
+サブエージェントを `description` で自動選択もするので、状況によっては「レビューして」だけで呼ばれます。
+
+**4) 外部に行ったか確認**（任意）: 下の「中継の確認」の生HTTPテストを使う。
+
 ### `models.json` の書式
 
 | 項目       | 必須 | 意味 |
@@ -115,6 +160,20 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude -p "say hi"
 
 どちらか分からない時は直叩きで判定: `/v1/messages` なら Anthropic ネイティブ、
 `/v1/chat/completions` なら OpenAI（後者は `format: "openai"` を付ける）。
+
+### プロバイダ設定例
+
+各行を `models.json` の `models[]` に `{ alias, model, format?, base_url, api_key }` として追加します（鍵は各自のもの）。
+
+| プロバイダ | format | base_url | model 例 |
+|---|---|---|---|
+| NVIDIA NIM | `"openai"` | `https://integrate.api.nvidia.com/v1` | `z-ai/glm-5.1`, `moonshotai/kimi-k2.6` |
+| OpenRouter (OpenAI 互換) | `"openai"` | `https://openrouter.ai/api/v1` | `z-ai/glm-4.6` |
+| ZenMux | `"openai"` | `https://zenmux.ai/api/v1` | `z-ai/glm-5.2` |
+| OpenRouter (Anthropic ネイティブ) | 省略 | `https://openrouter.ai/api` | `owl-alpha` |
+
+> モデルID はプロバイダの一覧（多くは `GET /models`）で確認。`/models` は通るのに推論で `403` が返る場合は、
+> ルーターではなく**プロバイダ側の権限/残高**の問題（推論を有効化・残高を追加）。
 
 ### 環境変数
 
