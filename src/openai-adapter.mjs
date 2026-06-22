@@ -161,6 +161,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
   let finish = null;
   let outTokens = 0;
   let textOut = '';
+  let genId = '';
 
   const nodeStream = Readable.fromWeb(webBody);
   const decoder = new StringDecoder('utf8');
@@ -175,7 +176,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
     clearTimeout(idleTimer);
     if (RELAY_LOG) {
       const tools = [...toolInfo.values()].map(t => t.name + '(' + t.args.slice(0, 200) + ')');
-      console.warn('[' + reqID + '] <- text=' + JSON.stringify(textOut.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + mapFinish(finish));
+      console.warn('[' + reqID + '] <- id=' + genId + ' text=' + JSON.stringify(textOut.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + mapFinish(finish));
     }
     if (finish === null) {
       console.warn('[' + reqID + '] stream ended without finish_reason -> error');
@@ -225,6 +226,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
           return;
         }
 
+        if (!genId && parsed.id) genId = parsed.id;
         const d = parsed.choices?.[0]?.delta;
         const fr = parsed.choices?.[0]?.finish_reason;
 

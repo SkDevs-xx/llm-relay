@@ -66,7 +66,7 @@ function respSummary(aj) {
   const c = aj.content || [];
   const text = c.filter(b => b.type === 'text').map(b => b.text).join(' ');
   const tools = c.filter(b => b.type === 'tool_use').map(b => b.name + '(' + JSON.stringify(b.input).slice(0, 200) + ')');
-  return 'text=' + JSON.stringify(text.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + aj.stop_reason;
+  return 'id=' + aj.id + ' text=' + JSON.stringify(text.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + aj.stop_reason;
 }
 
 const modelsMap = loadModels();
