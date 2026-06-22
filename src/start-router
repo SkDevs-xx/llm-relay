@@ -9,9 +9,10 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROUTER="$SCRIPT_DIR/router.mjs"
-LOG="$SCRIPT_DIR/../router.log"
 
-nohup node "$ROUTER" >> "$LOG" 2>&1 &
+# No file logging: discard router output. To debug, run the router directly:
+#   RELAY_LOG=1 node src/router.mjs   (logs go to the terminal's stderr)
+nohup node "$ROUTER" >/dev/null 2>&1 &
 ROUTER_PID=$!
 
 for i in 1 2 3 4 5; do
@@ -22,5 +23,5 @@ for i in 1 2 3 4 5; do
   fi
 done
 
-echo "llm-relay: router failed to start within 2.5s (pid=$ROUTER_PID). Check $LOG"
+echo "llm-relay: router failed to start within 2.5s (pid=$ROUTER_PID). Run 'node src/router.mjs' directly to see the error on stderr."
 exit 1
