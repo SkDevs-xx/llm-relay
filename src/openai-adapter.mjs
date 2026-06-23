@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 const STREAM_IDLE_MS = Number(process.env.RELAY_UPSTREAM_TIMEOUT_MS || 90 * 1000);
 const RELAY_LOG = process.env.RELAY_LOG === '1';
+const RELAY_LOG_FULL = process.env.RELAY_LOG_FULL === '1';
 
 function textOf(x) {
   if (typeof x === 'string') return x;
@@ -178,6 +179,13 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
       const tools = [...toolInfo.values()].map(t => t.name + '(' + t.args.slice(0, 200) + ')');
       console.warn('[' + reqID + '] <- id=' + genId + ' text=' + JSON.stringify(textOut.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + mapFinish(finish));
     }
+    if (RELAY_LOG_FULL) {
+      const out = ['[' + reqID + '] ===== RESPONSE(stream) id=' + genId + ' stop=' + mapFinish(finish) + ' ====='];
+      if (textOut) out.push(textOut);
+      for (const t of toolInfo.values()) out.push('[tool_use ' + t.name + '] ' + t.args);
+      out.push('[' + reqID + '] ===== END RESPONSE =====');
+      console.warn(out.join('\n'));
+    }
     if (finish === null) {
       console.warn('[' + reqID + '] stream ended without finish_reason -> error');
       send('error', { type: 'error', error: { type: 'api_error', message: 'upstream stream ended prematurely' } });
@@ -226,7 +234,7 @@ export async function streamOpenAIToAnthropic(webBody, res, model, reqID) {
           return;
         }
 
-        if (!genId && parsed.id) genId = parsed.id;
+        if (parsed.id) genId = parsed.id;
         const d = parsed.choices?.[0]?.delta;
         const fr = parsed.choices?.[0]?.finish_reason;
 

@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROUTER="$SCRIPT_DIR/router.mjs"
 
 # No file logging: discard router output. To debug, run the router directly:
-#   RELAY_LOG=1 node src/router.mjs   (logs go to the terminal's stderr)
+#   RELAY_LOG=1 RELAY_LOG_FULL=1 node src/router.mjs   (logs go to the terminal's stderr)
 nohup node "$ROUTER" >/dev/null 2>&1 &
 ROUTER_PID=$!
 

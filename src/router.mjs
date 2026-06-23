@@ -15,6 +15,7 @@ const MARKER_RE = /(?:^|\s)RELAY-MODEL:\s*(\S+)/m;
 const IDLE_MS = Number(process.env.RELAY_IDLE_MS || 20 * 60 * 1000);
 const UPSTREAM_TIMEOUT_MS = Number(process.env.RELAY_UPSTREAM_TIMEOUT_MS || 90 * 1000);
 const RELAY_LOG = process.env.RELAY_LOG === '1';
+const RELAY_LOG_FULL = process.env.RELAY_LOG_FULL === '1';
 
 let inflight = 0;
 let idleTimer = null;
@@ -69,6 +70,73 @@ function respSummary(aj) {
   return 'id=' + aj.id + ' text=' + JSON.stringify(text.slice(0, 200)) + ' tools=[' + tools.join(', ') + '] stop=' + aj.stop_reason;
 }
 
+function renderContent(c) {
+  if (typeof c === 'string') return c;
+  if (!Array.isArray(c)) return JSON.stringify(c);
+  return c.map(b => {
+    if (b.type === 'text') return b.text;
+    if (b.type === 'tool_use') return '[tool_use ' + b.name + '] ' + JSON.stringify(b.input);
+    if (b.type === 'tool_result') return '[tool_result ' + b.tool_use_id + '] ' + renderContent(b.content);
+    return '[' + b.type + ']';
+  }).join('\n');
+}
+
+function fullRequestDump(reqID, alias, model, body) {
+  const out = [];
+  out.push('[' + reqID + '] ===== REQUEST alias=' + alias + ' model=' + model + ' stream=' + (body.stream === true) + ' tools=' + ((body.tools || []).length) + ' =====');
+  out.push('[' + reqID + '] --- system ---');
+  out.push(extractSystemText(body.system));
+  out.push('[' + reqID + '] --- messages (' + ((body.messages || []).length) + ') ---');
+  for (const m of (body.messages || [])) {
+    out.push('[' + reqID + '] [' + m.role + '] ' + renderContent(m.content));
+  }
+  out.push('[' + reqID + '] ===== END REQUEST =====');
+  return out.join('\n');
+}
+
+function fullResponseDump(reqID, aj) {
+  const out = [];
+  out.push('[' + reqID + '] ===== RESPONSE id=' + aj.id + ' stop=' + aj.stop_reason + ' =====');
+  for (const b of (aj.content || [])) {
+    if (b.type === 'text') out.push(b.text);
+    else if (b.type === 'tool_use') out.push('[tool_use ' + b.name + '] ' + JSON.stringify(b.input));
+  }
+  out.push('[' + reqID + '] ===== END RESPONSE =====');
+  return out.join('\n');
+}
+
+function stripRelayNoise(body) {
+  let removed = 0;
+  const strip = (s) => {
+    if (typeof s !== 'string') return s;
+    const out = s
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .replace(/You are powered by the model named .+?\. The exact model ID is .+?\./g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    removed += s.length - out.length;
+    return out;
+  };
+  if (typeof body.system === 'string') {
+    body.system = strip(body.system);
+  } else if (Array.isArray(body.system)) {
+    for (const b of body.system) {
+      if (b && typeof b.text === 'string') b.text = strip(b.text);
+    }
+  }
+  for (const m of (body.messages || [])) {
+    if (typeof m.content === 'string') {
+      m.content = strip(m.content);
+    } else if (Array.isArray(m.content)) {
+      for (const b of m.content) {
+        if (b.type === 'text' && typeof b.text === 'string') b.text = strip(b.text);
+      }
+      m.content = m.content.filter(b => !(b.type === 'text' && (b.text == null || b.text === '')));
+    }
+  }
+  return removed;
+}
+
 const modelsMap = loadModels();
 
 const server = http.createServer((req, res) => {
@@ -116,6 +184,11 @@ const server = http.createServer((req, res) => {
       const m = sysText.match(MARKER_RE);
       if (m) alias = m[1];
     } catch {}
+
+    if (alias !== null && modelsMap.has(alias)) {
+      const removed = stripRelayNoise(parsedBody);
+      if (RELAY_LOG && removed > 0) console.warn(`[${reqID}] stripped ${removed} chars (system-reminders + injected identity)`);
+    }
 
     let upstreamUrl, forwardHeaders, bodyToSend, isOpenAI = false;
 
@@ -174,6 +247,10 @@ const server = http.createServer((req, res) => {
       forwardHeaders['accept-encoding'] = 'identity';
     }
 
+    if (alias !== null && RELAY_LOG_FULL) {
+      console.warn(fullRequestDump(reqID, alias, modelsMap.get(alias).model, parsedBody));
+    }
+
     const ac = new AbortController();
     const upstreamTimer = setTimeout(() => ac.abort(), UPSTREAM_TIMEOUT_MS);
     try {
@@ -204,6 +281,7 @@ const server = http.createServer((req, res) => {
           const oj = await up.json();
           const aj = fromOpenAIResponse(oj, parsedBody.model || alias, reqID);
           if (RELAY_LOG) console.warn(`[${reqID}] <- ${respSummary(aj)}`);
+          if (RELAY_LOG_FULL) console.warn(fullResponseDump(reqID, aj));
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify(aj));
         }
